@@ -6,7 +6,8 @@
     "dependencies": {
         "amqp": "*",
         "node-uuid": "*",
-        "redis": "*"
+        "redis": "*",
+        "rethinkdb": "*"
     },
     "repository": {
         "type": "git",

@@ -2,6 +2,7 @@ var url = require('url'),
     util = require('util'),
     amqp = require('amqp'),
     redis = require('redis'),
+    rethinkdb = require('rethinkdb'),
     events = require('events'),
     uuid = require('node-uuid');
 
@@ -35,9 +36,29 @@ function Configuration(options) {
 
     if (self.RESULT_BACKEND && self.RESULT_BACKEND.toLowerCase() === 'amqp') {
         self.backend_type = 'amqp';
-    } else if (self.RESULT_BACKEND && url.parse(self.RESULT_BACKEND)
-        .protocol === 'redis:') {
-        self.backend_type = 'redis';
+    } else {
+        var purl = url.parse(self.RESULT_BACKEND);
+        if (self.RESULT_BACKEND && purl.protocol === 'redis:') {
+            self.backend_type = 'redis';
+        } else if (self.RESULT_BACKEND && purl.protocol === 'rethinkdb:') {
+            self.backend_type = 'rethinkdb';
+            debug('Using rethinkdb...');
+            var auth_parsed = purl.auth && purl.auth.match(/([^:]+)(:[^:]+))?/);
+            self.BACKEND_CONNECT_OPTIONS =
+                self.BACKEND_CONNECT_OPTIONS || {
+                    host: purl.hostname,
+                    port: purl.port && parseInt(purl.port),
+                    db: purl.pathname && purl.pathname.replace(/\/+/g, '')
+                }
+            if(auth_parsed){
+                self.BACKEND_CONNECT_OPTIONS.user =
+                    self.BACKEND_CONNECT_OPTIONS.user ||
+                    (auth_parsed && auth_parsed[1]);
+                self.BACKEND_CONNECT_OPTIONS.password =
+                    self.BACKEND_CONNECT_OPTIONS.password ||
+                    (auth_parsed && auth_parsed[3]);
+            }
+        }
     }
 }
 
@@ -107,6 +128,56 @@ function RedisBroker(broker_url) {
 }
 util.inherits(RedisBroker, events.EventEmitter);
 
+function RethinkdbBackend(options){
+    var self = this;
+    self.conn = null;
+    self.options = options;
+    self.results = {};
+    self.is_connected = false;
+    self.quit = function(){
+        debug('Closing rethinkdb connection...');
+        self.conn.close();
+        self.is_connected = false;
+    };
+    rethinkdb.connect(self.options, function(err, conn) {
+        if(err){
+            self.emit('error', err);
+            return;
+        }
+        self.conn = conn;
+        self.is_connected = true;
+        self.emit('connect');
+        rethinkdb.table('celery_taskmeta').changes().run(conn, function(err, cursor){
+            if(err){
+                self.emit('error', err);
+                return;
+            }
+            cursor.each(function(err, row){
+                if(err){
+                    if(err.name === 'ReqlRuntimeError' &&
+                            err.msg ==='Connection is closed.' &&
+                            !self.is_connected) {
+                        debug('Closing rethinkdb cursor...');
+                        // cursor.close();
+                    } else {
+                        self.emit('error', err);
+                    }
+                    return;
+                }
+                if( row.new_val && (!row.old_val) ) {
+                    var result = self.results[row.new_val.id];
+                    if(result){
+                        result.emit('ready', row.new_val.result);
+                        delete self.results[row.id];
+                    }
+                }
+            });
+        });
+    });
+    return self;
+}
+util.inherits(RethinkdbBackend, events.EventEmitter);
+
 
 function Client(conf) {
     var self = this;
@@ -142,21 +213,24 @@ function Client(conf) {
         }, {
             defaultExchangeName: self.conf.DEFAULT_EXCHANGE
         });
-    } else if (self.conf.backend_type === 'redis') {
-        var purl = url.parse(self.conf.RESULT_BACKEND),
-            database = purl.pathname.slice(1);
-        debug('Connecting to backend...');
-        self.backend = redis.createClient(purl.port, purl.hostname);
-        if (database) {
-            self.backend.select(database);
-        }
+    } else if (self.conf.backend_type === 'redis' || self.conf.backend_type === 'rethinkdb') {
+        if (self.conf.backend_type === 'redis') {
+            var purl = url.parse(self.conf.RESULT_BACKEND),
+                database = purl.pathname.slice(1);
+            debug('Connecting to backend...');
+            self.backend = redis.createClient(purl.port, purl.hostname);
+            if (database) {
+                self.backend.select(database);
+            }
 
-        if (purl.auth) {
-            debug('Authenticating backend...');
-            self.backend.auth(purl.auth.split(':')[1]);
-            debug('Backend authenticated...');
+            if (purl.auth) {
+                debug('Authenticating backend...');
+                self.backend.auth(purl.auth.split(':')[1]);
+                debug('Backend authenticated...');
+            }
+        } else if( self.conf.backend_type === 'rethinkdb' ) {
+            self.backend = new RethinkdbBackend(self.conf.BACKEND_CONNECT_OPTIONS);
         }
-
         self.backend.on('connect', function() {
             debug('Backend connected...');
             self.backend_connected = true;
@@ -312,6 +386,8 @@ function Result(taskid, client) {
                     self.emit(message.status.toLowerCase(), message);
                 }).addCallback(function(ok) { ctag = ok.consumerTag; });
             });
+    }else if(self.client.conf.backend_type === 'rethinkdb') {
+        self.client.backend.results[self.taskid] = self;
     }
 }
 
