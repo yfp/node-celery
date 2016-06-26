@@ -167,8 +167,10 @@ function RethinkdbBackend(options){
                 if( row.new_val && (!row.old_val) ) {
                     var result = self.results[row.new_val.id];
                     if(result){
-                        result.emit('ready', row.new_val.result);
-                        delete self.results[row.id];
+                        result.full_result = row.new_val;
+                        result.result = row.new_val.result;
+                        result.emit('ready', result.result);
+                        delete self.results[row.new_val.id];
                     }
                 }
             });
@@ -237,7 +239,7 @@ function Client(conf) {
             if (self.broker_connected) {
                 self.ready = true;
                 debug('Emiting connect event...');
-                self.emit('connect');
+                self.emit('connect', self);
             }
         });
 
@@ -254,7 +256,7 @@ function Client(conf) {
         if (self.backend_connected) {
             self.ready = true;
             debug('Emiting connect event...');
-            self.emit('connect');
+            self.emit('connect', self);
         }
     });
 
