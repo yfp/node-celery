@@ -4,7 +4,8 @@ var url = require('url'),
     redis = require('redis'),
     rethinkdb = require('rethinkdb'),
     events = require('events'),
-    uuid = require('node-uuid');
+    uuid = require('node-uuid'),
+    wildcard = require('wildcard');
 
 var createMessage = require('./protocol').createMessage;
 
@@ -314,9 +315,17 @@ function Task(client, name, options, exchange) {
     self.client = client;
     self.name = name;
     self.options = options || {};
-
-    var route = self.client.conf.ROUTES[name],
-        queue = route && route.queue;
+    var route;
+    // get all first route pattern that match given route name
+    for(var pattern in self.client.conf.ROUTES) {
+        if (self.client.conf.ROUTES.hasOwnProperty(pattern)) {
+            if( wildcard(pattern, name) ){
+                route = self.client.conf.ROUTES[pattern];
+                break;
+            }
+        }
+    }
+    var queue = route && route.queue;
 
     self.publish = function (args, kwargs, options, callback) {
         var id = options.id || uuid.v4();
