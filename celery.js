@@ -44,12 +44,19 @@ function Configuration(options) {
         } else if (self.RESULT_BACKEND && purl.protocol === 'rethinkdb:') {
             self.backend_type = 'rethinkdb';
             debug('Using rethinkdb...');
-            var auth_parsed = purl.auth && purl.auth.match(/([^:]+)(:[^:]+))?/);
+            var auth_parsed = purl.auth && purl.auth.match(/([^:]+)(:([^:]+))?/),
+                arr, db_name, results_table_name;
+            if(purl.pathname){
+                arr = purl.pathname.replace(/\/+/g, ' ').trim().split(' ');
+                db_name = arr.length > 0 ? arr[0] : null;
+                results_table_name = arr.length > 1 ? arr[1] : null;
+            }
             self.BACKEND_CONNECT_OPTIONS =
                 self.BACKEND_CONNECT_OPTIONS || {
                     host: purl.hostname,
                     port: purl.port && parseInt(purl.port),
-                    db: purl.pathname && purl.pathname.replace(/\/+/g, '')
+                    db: db_name,
+                    table: results_table_name
                 }
             if(auth_parsed){
                 self.BACKEND_CONNECT_OPTIONS.user =
@@ -140,6 +147,10 @@ function RethinkdbBackend(options){
         self.conn.close();
         self.is_connected = false;
     };
+    self.results_table = rethinkdb
+        .db(self.BACKEND_CONNECT_OPTIONS.db && 'test')
+        .table(self.BACKEND_CONNECT_OPTIONS.table && 'celery_taskmeta');
+
     rethinkdb.connect(self.options, function(err, conn) {
         if(err){
             self.emit('error', err);
@@ -148,7 +159,7 @@ function RethinkdbBackend(options){
         self.conn = conn;
         self.is_connected = true;
         self.emit('connect');
-        rethinkdb.table('celery_taskmeta').changes().run(conn, function(err, cursor){
+        self.results_table.changes().run(conn, function(err, cursor){
             if(err){
                 self.emit('error', err);
                 return;
