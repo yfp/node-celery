@@ -148,8 +148,8 @@ function RethinkdbBackend(options){
         self.is_connected = false;
     };
     self.results_table = rethinkdb
-        .db(self.BACKEND_CONNECT_OPTIONS.db && 'test')
-        .table(self.BACKEND_CONNECT_OPTIONS.table && 'celery_taskmeta');
+        .db(self.options.db || 'test')
+        .table(self.options.table || 'celery_taskmeta');
 
     rethinkdb.connect(self.options, function(err, conn) {
         if(err){
